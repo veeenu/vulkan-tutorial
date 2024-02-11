@@ -2,7 +2,10 @@ use std::ffi::{c_char, CStr};
 
 use anyhow::{anyhow, Result};
 use ash::{
-    extensions::{ext::DebugUtils, khr::Surface},
+    extensions::{
+        ext::DebugUtils,
+        khr::{Surface, Swapchain},
+    },
     vk::{
         make_api_version, ApplicationInfo, DeviceCreateInfo, DeviceQueueCreateInfo,
         InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, Queue,
@@ -269,7 +272,22 @@ fn is_device_suitable(
         return None;
     }
 
+    if !check_device_extension_support(instance, device).unwrap_or(false) {
+        return None;
+    }
+
     let queue_families = QueueFamilies::new(instance, device, surface, surface_khr)?;
 
     Some((device, queue_families))
+}
+
+fn check_device_extension_support(instance: &Instance, device: PhysicalDevice) -> Result<bool> {
+    Ok(
+        unsafe { instance.enumerate_device_extension_properties(device)? }
+            .into_iter()
+            .any(|extension| unsafe {
+                let ext_name = CStr::from_ptr(extension.extension_name.as_ptr());
+                ext_name == Swapchain::name()
+            }),
+    )
 }
