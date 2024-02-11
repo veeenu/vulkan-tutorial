@@ -2,15 +2,15 @@ use std::ffi::{c_char, CStr};
 
 use anyhow::{anyhow, Result};
 use ash::{
-    extensions::{ext::DebugUtils, khr::Swapchain},
+    extensions::{ext::DebugUtils, khr::Surface},
     vk::{
         make_api_version, ApplicationInfo, DeviceCreateInfo, DeviceQueueCreateInfo,
         InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, Queue,
-        QueueFlags,
+        QueueFlags, SurfaceKHR,
     },
     Device, Entry, Instance,
 };
-use raw_window_handle::HasRawDisplayHandle;
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
@@ -83,7 +83,9 @@ fn main_loop(window: Window, event_loop: EventLoop<()>) {
 struct Vulkan {
     instance: Instance,
     device: Device,
-    queue: Queue,
+    present_queue: Queue,
+    surface: Surface,
+    surface_khr: SurfaceKHR,
 }
 
 impl Vulkan {
@@ -138,13 +140,26 @@ impl Vulkan {
 
         let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
 
+        // Create surface
+        let surface = Surface::new(&entry, &instance);
+
+        let surface_khr = unsafe {
+            ash_window::create_surface(
+                &entry,
+                &instance,
+                window.raw_display_handle(),
+                window.raw_window_handle(),
+                None,
+            )
+        }?;
+
         // Find physical device and queue family
         println!("Creating physical device and finding queue family index");
 
         let (physical_device, queue_family_index) =
             unsafe { instance.enumerate_physical_devices()? }
                 .into_iter()
-                .find_map(|device| is_device_suitable(&instance, device))
+                .find_map(|device| is_device_suitable(&instance, device, &surface, surface_khr))
                 .ok_or_else(|| anyhow!("Could not find suitable physical device"))?;
 
         // Create logical device and queues
@@ -166,12 +181,14 @@ impl Vulkan {
 
         println!("Retrieving device queue");
 
-        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+        let present_queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
         Ok(Self {
             instance,
             device,
-            queue,
+            present_queue,
+            surface,
+            surface_khr,
         })
     }
 }
@@ -179,6 +196,7 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.surface.destroy_surface(self.surface_khr, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)
         };
@@ -188,6 +206,8 @@ impl Drop for Vulkan {
 fn is_device_suitable(
     instance: &Instance,
     device: PhysicalDevice,
+    surface: &Surface,
+    surface_khr: SurfaceKHR,
 ) -> Option<(PhysicalDevice, u32)> {
     let properties = unsafe { instance.get_physical_device_properties(device) };
     let features = unsafe { instance.get_physical_device_features(device) };
@@ -201,12 +221,23 @@ fn is_device_suitable(
             .get_physical_device_queue_family_properties(device)
             .iter()
             .enumerate()
-            .find_map(|(idx, info)| {
-                if info.queue_flags.contains(QueueFlags::GRAPHICS) {
-                    Some((device, idx as u32))
-                } else {
-                    None
+            .find_map(|(queue_family_index, info)| {
+                if !info.queue_flags.contains(QueueFlags::GRAPHICS) {
+                    return None;
                 }
+
+                if !surface
+                    .get_physical_device_surface_support(
+                        device,
+                        queue_family_index as u32,
+                        surface_khr,
+                    )
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+
+                Some((device, queue_family_index as u32))
             })
     }
 }
