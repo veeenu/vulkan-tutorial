@@ -2,7 +2,7 @@ use std::ffi::{c_char, CStr};
 
 use anyhow::{anyhow, Result};
 use ash::{
-    extensions::ext::DebugUtils,
+    extensions::{ext::DebugUtils, khr::Swapchain},
     vk::{
         make_api_version, ApplicationInfo, DeviceCreateInfo, DeviceQueueCreateInfo,
         InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, Queue,
@@ -128,6 +128,7 @@ impl Vulkan {
         extension_names.push(DebugUtils::name().as_ptr());
 
         // Create instance
+        println!("Creating instance");
 
         let instance_create_info = InstanceCreateInfo::builder()
             .application_info(&app_info)
@@ -138,6 +139,7 @@ impl Vulkan {
         let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
 
         // Find physical device and queue family
+        println!("Creating physical device and finding queue family index");
 
         let (physical_device, queue_family_index) =
             unsafe { instance.enumerate_physical_devices()? }
@@ -146,20 +148,23 @@ impl Vulkan {
                 .ok_or_else(|| anyhow!("Could not find suitable physical device"))?;
 
         // Create logical device and queues
+        println!("Creating logical device");
 
         let device_queue_create_info = DeviceQueueCreateInfo::builder()
             .queue_family_index(queue_family_index)
             .queue_priorities(&[1.0f32])
             .build();
 
-        let device_features = PhysicalDeviceFeatures::default();
+        let device_features = PhysicalDeviceFeatures::builder().build();
 
         let device_create_info = DeviceCreateInfo::builder()
-            .queue_create_infos(&[device_queue_create_info])
+            .queue_create_infos(std::slice::from_ref(&device_queue_create_info))
             .enabled_features(&device_features)
             .build();
 
         let device = unsafe { instance.create_device(physical_device, &device_create_info, None)? };
+
+        println!("Retrieving device queue");
 
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
