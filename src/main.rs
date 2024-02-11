@@ -83,6 +83,7 @@ fn main_loop(window: Window, event_loop: EventLoop<()>) {
 struct Vulkan {
     instance: Instance,
     device: Device,
+    graphics_queue: Queue,
     present_queue: Queue,
     surface: Surface,
     surface_khr: SurfaceKHR,
@@ -156,36 +157,47 @@ impl Vulkan {
         // Find physical device and queue family
         println!("Creating physical device and finding queue family index");
 
-        let (physical_device, queue_family_index) =
-            unsafe { instance.enumerate_physical_devices()? }
-                .into_iter()
-                .find_map(|device| is_device_suitable(&instance, device, &surface, surface_khr))
-                .ok_or_else(|| anyhow!("Could not find suitable physical device"))?;
+        let (physical_device, queue_families) = unsafe { instance.enumerate_physical_devices()? }
+            .into_iter()
+            .find_map(|device| is_device_suitable(&instance, device, &surface, surface_khr))
+            .ok_or_else(|| anyhow!("Could not find suitable physical device"))?;
 
         // Create logical device and queues
         println!("Creating logical device");
 
-        let device_queue_create_info = DeviceQueueCreateInfo::builder()
-            .queue_family_index(queue_family_index)
+        let device_queue_create_info_graphics = DeviceQueueCreateInfo::builder()
+            .queue_family_index(queue_families.graphics_queue)
             .queue_priorities(&[1.0f32])
             .build();
+
+        let device_queue_create_info_present = DeviceQueueCreateInfo::builder()
+            .queue_family_index(queue_families.present_queue)
+            .queue_priorities(&[1.0f32])
+            .build();
+
+        let device_queue_create_infos = [
+            device_queue_create_info_graphics,
+            device_queue_create_info_present,
+        ];
 
         let device_features = PhysicalDeviceFeatures::builder().build();
 
         let device_create_info = DeviceCreateInfo::builder()
-            .queue_create_infos(std::slice::from_ref(&device_queue_create_info))
+            .queue_create_infos(&device_queue_create_infos)
             .enabled_features(&device_features)
             .build();
 
         let device = unsafe { instance.create_device(physical_device, &device_create_info, None)? };
 
-        println!("Retrieving device queue");
+        println!("Retrieving device queues");
 
-        let present_queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+        let graphics_queue = unsafe { device.get_device_queue(queue_families.graphics_queue, 0) };
+        let present_queue = unsafe { device.get_device_queue(queue_families.present_queue, 0) };
 
         Ok(Self {
             instance,
             device,
+            graphics_queue,
             present_queue,
             surface,
             surface_khr,
@@ -203,12 +215,53 @@ impl Drop for Vulkan {
     }
 }
 
+struct QueueFamilies {
+    graphics_queue: u32,
+    present_queue: u32,
+}
+
+impl QueueFamilies {
+    fn new(
+        instance: &Instance,
+        device: PhysicalDevice,
+        surface: &Surface,
+        surface_khr: SurfaceKHR,
+    ) -> Option<Self> {
+        let mut graphics_queue = None;
+        let mut present_queue = None;
+
+        for (queue_family_index, info) in
+            unsafe { instance.get_physical_device_queue_family_properties(device) }
+                .iter()
+                .enumerate()
+                .map(|(queue_family_index, info)| (queue_family_index as u32, info))
+        {
+            if info.queue_flags.contains(QueueFlags::GRAPHICS) {
+                graphics_queue = Some(queue_family_index);
+            }
+
+            if unsafe {
+                surface
+                    .get_physical_device_surface_support(device, queue_family_index, surface_khr)
+                    .unwrap_or(false)
+            } {
+                present_queue = Some(queue_family_index)
+            }
+        }
+
+        Some(Self {
+            present_queue: present_queue?,
+            graphics_queue: graphics_queue?,
+        })
+    }
+}
+
 fn is_device_suitable(
     instance: &Instance,
     device: PhysicalDevice,
     surface: &Surface,
     surface_khr: SurfaceKHR,
-) -> Option<(PhysicalDevice, u32)> {
+) -> Option<(PhysicalDevice, QueueFamilies)> {
     let properties = unsafe { instance.get_physical_device_properties(device) };
     let features = unsafe { instance.get_physical_device_features(device) };
 
@@ -216,28 +269,7 @@ fn is_device_suitable(
         return None;
     }
 
-    unsafe {
-        instance
-            .get_physical_device_queue_family_properties(device)
-            .iter()
-            .enumerate()
-            .find_map(|(queue_family_index, info)| {
-                if !info.queue_flags.contains(QueueFlags::GRAPHICS) {
-                    return None;
-                }
+    let queue_families = QueueFamilies::new(instance, device, surface, surface_khr)?;
 
-                if !surface
-                    .get_physical_device_surface_support(
-                        device,
-                        queue_family_index as u32,
-                        surface_khr,
-                    )
-                    .unwrap_or(false)
-                {
-                    return None;
-                }
-
-                Some((device, queue_family_index as u32))
-            })
-    }
+    Some((device, queue_families))
 }
