@@ -8,7 +8,7 @@ use ash::{
     },
     vk::{
         make_api_version, ApplicationInfo, ColorSpaceKHR, CompositeAlphaFlagsKHR, DeviceCreateInfo,
-        DeviceQueueCreateInfo, Extent2D, Format, ImageUsageFlags, InstanceCreateInfo,
+        DeviceQueueCreateInfo, Extent2D, Format, Image, ImageUsageFlags, InstanceCreateInfo,
         PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, PresentModeKHR, Queue,
         QueueFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR,
         SwapchainCreateInfoKHR, SwapchainKHR,
@@ -91,6 +91,7 @@ struct Vulkan {
 
     swapchain: Swapchain,
     swapchain_khr: SwapchainKHR,
+    swapchain_buffers: Vec<Image>,
 
     surface: Surface,
     surface_khr: SurfaceKHR,
@@ -205,6 +206,7 @@ impl Vulkan {
 
         let swapchain = Swapchain::new(&instance, &device);
         let swapchain_khr = unsafe { swapchain.create_swapchain(&swapchain_create_info, None)? };
+        let swapchain_buffers = unsafe { swapchain.get_swapchain_images(swapchain_khr) }?;
 
         Ok(Self {
             instance,
@@ -212,6 +214,7 @@ impl Vulkan {
 
             swapchain,
             swapchain_khr,
+            swapchain_buffers,
 
             surface,
             surface_khr,
