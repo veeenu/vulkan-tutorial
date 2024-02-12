@@ -7,11 +7,12 @@ use ash::{
         khr::{Surface, Swapchain},
     },
     vk::{
-        make_api_version, ApplicationInfo, ColorSpaceKHR, CompositeAlphaFlagsKHR, DeviceCreateInfo,
-        DeviceQueueCreateInfo, Extent2D, Format, Image, ImageUsageFlags, InstanceCreateInfo,
-        PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, PresentModeKHR, Queue,
-        QueueFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR,
-        SwapchainCreateInfoKHR, SwapchainKHR,
+        make_api_version, ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle,
+        CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, Image,
+        ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
+        ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
+        PhysicalDeviceType, PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceCapabilitiesKHR,
+        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
     },
     Device, Entry, Instance,
 };
@@ -91,7 +92,8 @@ struct Vulkan {
 
     swapchain: Swapchain,
     swapchain_khr: SwapchainKHR,
-    swapchain_buffers: Vec<Image>,
+    swapchain_images: Vec<Image>,
+    swapchain_image_views: Vec<ImageView>,
 
     surface: Surface,
     surface_khr: SurfaceKHR,
@@ -206,7 +208,36 @@ impl Vulkan {
 
         let swapchain = Swapchain::new(&instance, &device);
         let swapchain_khr = unsafe { swapchain.create_swapchain(&swapchain_create_info, None)? };
-        let swapchain_buffers = unsafe { swapchain.get_swapchain_images(swapchain_khr) }?;
+        let swapchain_images = unsafe { swapchain.get_swapchain_images(swapchain_khr) }?;
+
+        let image_view_create_info = ImageViewCreateInfo::builder()
+            .view_type(ImageViewType::TYPE_2D)
+            .format(swapchain_create_info.image_format)
+            .components(
+                ComponentMapping::builder()
+                    .r(ComponentSwizzle::IDENTITY)
+                    .g(ComponentSwizzle::IDENTITY)
+                    .b(ComponentSwizzle::IDENTITY)
+                    .a(ComponentSwizzle::IDENTITY)
+                    .build(),
+            )
+            .subresource_range(
+                ImageSubresourceRange::builder()
+                    .aspect_mask(ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1)
+                    .build(),
+            );
+
+        let swapchain_image_views = (0..swapchain_images.len())
+            .map(|_| unsafe {
+                device
+                    .create_image_view(&image_view_create_info, None)
+                    .map_err(anyhow::Error::from)
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             instance,
@@ -214,7 +245,8 @@ impl Vulkan {
 
             swapchain,
             swapchain_khr,
-            swapchain_buffers,
+            swapchain_images,
+            swapchain_image_views,
 
             surface,
             surface_khr,
@@ -228,6 +260,11 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.swapchain_image_views
+                .drain(..)
+                .for_each(|swapchain_image_view| {
+                    self.device.destroy_image_view(swapchain_image_view, None);
+                });
             self.swapchain.destroy_swapchain(self.swapchain_khr, None);
             self.surface.destroy_surface(self.surface_khr, None);
             self.device.destroy_device(None);
