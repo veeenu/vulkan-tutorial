@@ -7,9 +7,11 @@ use ash::{
         khr::{Surface, Swapchain},
     },
     vk::{
-        make_api_version, ApplicationInfo, DeviceCreateInfo, DeviceQueueCreateInfo,
-        InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, Queue,
-        QueueFlags, SurfaceKHR,
+        make_api_version, ApplicationInfo, ColorSpaceKHR, CompositeAlphaFlagsKHR, DeviceCreateInfo,
+        DeviceQueueCreateInfo, Extent2D, Format, ImageUsageFlags, InstanceCreateInfo,
+        PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, PresentModeKHR, Queue,
+        QueueFlags, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR,
+        SwapchainCreateInfoKHR, SwapchainKHR,
     },
     Device, Entry, Instance,
 };
@@ -86,10 +88,15 @@ fn main_loop(window: Window, event_loop: EventLoop<()>) {
 struct Vulkan {
     instance: Instance,
     device: Device,
-    graphics_queue: Queue,
-    present_queue: Queue,
+
+    swapchain: Swapchain,
+    swapchain_khr: SwapchainKHR,
+
     surface: Surface,
     surface_khr: SurfaceKHR,
+
+    graphics_queue: Queue,
+    present_queue: Queue,
 }
 
 impl Vulkan {
@@ -120,12 +127,7 @@ impl Vulkan {
             .api_version(make_api_version(0, 1, 0, 0))
             .build();
 
-        let layer_names =
-            [unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") }];
-        let layers_names_raw: Vec<*const c_char> = layer_names
-            .iter()
-            .map(|raw_name| raw_name.as_ptr())
-            .collect();
+        let layer_names = [b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const i8];
 
         let mut extension_names =
             ash_window::enumerate_required_extensions(window.raw_display_handle())
@@ -133,18 +135,16 @@ impl Vulkan {
                 .to_vec();
         extension_names.push(DebugUtils::name().as_ptr());
 
-        // Create instance
         println!("Creating instance");
 
         let instance_create_info = InstanceCreateInfo::builder()
             .application_info(&app_info)
-            .enabled_layer_names(&layers_names_raw)
+            .enabled_layer_names(&layer_names)
             .enabled_extension_names(&extension_names)
             .build();
 
         let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
 
-        // Create surface
         let surface = Surface::new(&entry, &instance);
 
         let surface_khr = unsafe {
@@ -157,15 +157,14 @@ impl Vulkan {
             )
         }?;
 
-        // Find physical device and queue family
         println!("Creating physical device and finding queue family index");
 
-        let (physical_device, queue_families) = unsafe { instance.enumerate_physical_devices()? }
-            .into_iter()
-            .find_map(|device| is_device_suitable(&instance, device, &surface, surface_khr))
-            .ok_or_else(|| anyhow!("Could not find suitable physical device"))?;
+        let (physical_device, queue_families, swapchain_support) =
+            unsafe { instance.enumerate_physical_devices()? }
+                .into_iter()
+                .find_map(|device| is_device_suitable(&instance, device, &surface, surface_khr))
+                .ok_or_else(|| anyhow!("Could not find suitable physical device"))?;
 
-        // Create logical device and queues
         println!("Creating logical device");
 
         let device_queue_create_info_graphics = DeviceQueueCreateInfo::builder()
@@ -185,9 +184,12 @@ impl Vulkan {
 
         let device_features = PhysicalDeviceFeatures::builder().build();
 
+        let device_extension_names = [Swapchain::name().as_ptr()];
+
         let device_create_info = DeviceCreateInfo::builder()
             .queue_create_infos(&device_queue_create_infos)
             .enabled_features(&device_features)
+            .enabled_extension_names(&device_extension_names)
             .build();
 
         let device = unsafe { instance.create_device(physical_device, &device_create_info, None)? };
@@ -197,13 +199,25 @@ impl Vulkan {
         let graphics_queue = unsafe { device.get_device_queue(queue_families.graphics_queue, 0) };
         let present_queue = unsafe { device.get_device_queue(queue_families.present_queue, 0) };
 
+        println!("Creating swap chain");
+
+        let swapchain_create_info = swapchain_support.create_info(&queue_families);
+
+        let swapchain = Swapchain::new(&instance, &device);
+        let swapchain_khr = unsafe { swapchain.create_swapchain(&swapchain_create_info, None)? };
+
         Ok(Self {
             instance,
             device,
-            graphics_queue,
-            present_queue,
+
+            swapchain,
+            swapchain_khr,
+
             surface,
             surface_khr,
+
+            graphics_queue,
+            present_queue,
         })
     }
 }
@@ -211,6 +225,7 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.swapchain.destroy_swapchain(self.swapchain_khr, None);
             self.surface.destroy_surface(self.surface_khr, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)
@@ -259,12 +274,124 @@ impl QueueFamilies {
     }
 }
 
+struct SwapchainSupport {
+    capabilities: SurfaceCapabilitiesKHR,
+    formats: Vec<SurfaceFormatKHR>,
+    present_modes: Vec<PresentModeKHR>,
+    surface_khr: SurfaceKHR,
+}
+
+impl SwapchainSupport {
+    fn new(device: PhysicalDevice, surface: &Surface, surface_khr: SurfaceKHR) -> Option<Self> {
+        let capabilities = unsafe {
+            surface
+                .get_physical_device_surface_capabilities(device, surface_khr)
+                .ok()?
+        };
+        let formats = unsafe {
+            surface
+                .get_physical_device_surface_formats(device, surface_khr)
+                .ok()?
+        };
+        let present_modes = unsafe {
+            surface
+                .get_physical_device_surface_present_modes(device, surface_khr)
+                .ok()?
+        };
+
+        if !formats.is_empty() && !present_modes.is_empty() {
+            Some(Self {
+                capabilities,
+                formats,
+                present_modes,
+                surface_khr,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn choose_format(&self) -> SurfaceFormatKHR {
+        self.formats
+            .iter()
+            .copied()
+            .find(|format| {
+                println!("Format: {format:?}");
+                format.format == Format::B8G8R8A8_UNORM
+                    && format.color_space == ColorSpaceKHR::SRGB_NONLINEAR
+            })
+            .unwrap_or(self.formats.first().copied().unwrap())
+    }
+
+    fn choose_present_mode(&self) -> PresentModeKHR {
+        self.present_modes
+            .iter()
+            .copied()
+            .find(|&present_mode| present_mode == PresentModeKHR::MAILBOX)
+            .unwrap_or(PresentModeKHR::FIFO)
+    }
+
+    fn choose_swap_extent(&self) -> Extent2D {
+        if self.capabilities.current_extent.width == u32::MAX {
+            Extent2D {
+                width: u32::clamp(
+                    WIDTH,
+                    self.capabilities.min_image_extent.width,
+                    self.capabilities.max_image_extent.width,
+                ),
+                height: u32::clamp(
+                    HEIGHT,
+                    self.capabilities.min_image_extent.height,
+                    self.capabilities.max_image_extent.height,
+                ),
+            }
+        } else {
+            self.capabilities.current_extent
+        }
+    }
+
+    fn choose_image_count(&self) -> u32 {
+        u32::clamp(
+            self.capabilities.min_image_count + 1,
+            self.capabilities.min_image_count,
+            self.capabilities.max_image_count,
+        )
+    }
+
+    fn create_info(&self, queue_families: &QueueFamilies) -> SwapchainCreateInfoKHR {
+        // Look into VK_IMAGE_USAGE_TRANSFER_DST_BIT for compositing
+
+        let is_same_queue = queue_families.present_queue == queue_families.graphics_queue;
+
+        let format = self.choose_format();
+        SwapchainCreateInfoKHR::builder()
+            .min_image_count(self.choose_image_count())
+            .present_mode(self.choose_present_mode())
+            .image_extent(self.choose_swap_extent())
+            .image_format(format.format)
+            .image_color_space(format.color_space)
+            .image_array_layers(1)
+            .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(if is_same_queue {
+                SharingMode::CONCURRENT
+            } else {
+                SharingMode::EXCLUSIVE
+            })
+            .queue_family_indices(&[queue_families.present_queue, queue_families.graphics_queue])
+            .pre_transform(self.capabilities.current_transform)
+            .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
+            .surface(self.surface_khr)
+            .clipped(true)
+            .build()
+    }
+}
+
 fn is_device_suitable(
     instance: &Instance,
     device: PhysicalDevice,
     surface: &Surface,
     surface_khr: SurfaceKHR,
-) -> Option<(PhysicalDevice, QueueFamilies)> {
+) -> Option<(PhysicalDevice, QueueFamilies, SwapchainSupport)> {
     let properties = unsafe { instance.get_physical_device_properties(device) };
     let features = unsafe { instance.get_physical_device_features(device) };
 
@@ -277,8 +404,9 @@ fn is_device_suitable(
     }
 
     let queue_families = QueueFamilies::new(instance, device, surface, surface_khr)?;
+    let swapchain_support = SwapchainSupport::new(device, surface, surface_khr)?;
 
-    Some((device, queue_families))
+    Some((device, queue_families, swapchain_support))
 }
 
 fn check_device_extension_support(instance: &Instance, device: PhysicalDevice) -> Result<bool> {
