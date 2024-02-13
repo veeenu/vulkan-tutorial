@@ -7,19 +7,22 @@ use ash::{
         khr::{Surface, Swapchain},
     },
     vk::{
-        make_api_version, ApplicationInfo, BlendFactor, BlendOp, ColorComponentFlags,
+        make_api_version, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
+        AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags,
         ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
         DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace, Image,
-        ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
-        ImageViewType, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice,
-        PhysicalDeviceFeatures, PhysicalDeviceType, PipelineColorBlendAttachmentState,
-        PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateInfo,
-        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, ShaderModule,
-        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SurfaceCapabilitiesKHR,
-        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
+        ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice,
+        PhysicalDeviceFeatures, PhysicalDeviceType, PipelineBindPoint,
+        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
+        PipelineLayoutCreateInfo, PipelineRasterizationStateCreateInfo,
+        PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
+        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
+        QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
+        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription,
+        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        Viewport,
     },
     Device, Entry, Instance,
 };
@@ -125,6 +128,7 @@ struct Vulkan {
     fragment_shader: ShaderModule,
 
     pipeline_layout: PipelineLayout,
+    render_pass: RenderPass,
 }
 
 impl Vulkan {
@@ -376,6 +380,36 @@ impl Vulkan {
         let pipeline_layout =
             unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }?;
 
+        println!("Creating render pass");
+
+        let color_attachment_description = AttachmentDescription::builder()
+            .format(swapchain_create_info.image_format)
+            .samples(SampleCountFlags::TYPE_1)
+            .load_op(AttachmentLoadOp::CLEAR)
+            .store_op(AttachmentStoreOp::STORE)
+            .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .final_layout(ImageLayout::PRESENT_SRC_KHR)
+            .build();
+
+        let color_attachment_reference = AttachmentReference::builder()
+            .attachment(0)
+            .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .build();
+
+        let subpass_description = SubpassDescription::builder()
+            .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
+            .color_attachments(&[color_attachment_reference])
+            .build();
+
+        let render_pass_create_info = RenderPassCreateInfo::builder()
+            .attachments(&[color_attachment_description])
+            .subpasses(&[subpass_description])
+            .build();
+
+        let render_pass = unsafe { device.create_render_pass(&render_pass_create_info, None) }?;
+
         Ok(Self {
             instance,
             device,
@@ -395,6 +429,7 @@ impl Vulkan {
             fragment_shader,
 
             pipeline_layout,
+            render_pass,
         })
     }
 }
@@ -402,6 +437,9 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_render_pass(self.render_pass, None);
             self.device.destroy_shader_module(self.vertex_shader, None);
             self.device
                 .destroy_shader_module(self.fragment_shader, None);
