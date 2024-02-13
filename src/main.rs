@@ -1,5 +1,4 @@
-use core::slice;
-use std::{ffi::CStr, mem, path::Path};
+use std::ffi::CStr;
 
 use anyhow::{anyhow, Result};
 use ash::{
@@ -8,13 +7,19 @@ use ash::{
         khr::{Surface, Swapchain},
     },
     vk::{
-        make_api_version, ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle,
-        CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, Image,
+        make_api_version, ApplicationInfo, BlendFactor, BlendOp, ColorComponentFlags,
+        ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
+        DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace, Image,
         ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
-        ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
-        PhysicalDeviceType, PipelineShaderStageCreateInfo, PresentModeKHR, Queue, QueueFlags,
-        ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode,
-        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        ImageViewType, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice,
+        PhysicalDeviceFeatures, PhysicalDeviceType, PipelineColorBlendAttachmentState,
+        PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateInfo,
+        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, ShaderModule,
+        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SurfaceCapabilitiesKHR,
+        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
     },
     Device, Entry, Instance,
 };
@@ -118,6 +123,8 @@ struct Vulkan {
 
     vertex_shader: ShaderModule,
     fragment_shader: ShaderModule,
+
+    pipeline_layout: PipelineLayout,
 }
 
 impl Vulkan {
@@ -296,6 +303,79 @@ impl Vulkan {
             .name(unsafe { CStr::from_bytes_with_nul_unchecked(b"main") })
             .build();
 
+        println!("Creating pipeline state");
+
+        let pipeline_dynamic_state_create_info = PipelineDynamicStateCreateInfo::builder()
+            .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR])
+            .build();
+
+        let pipeline_vertex_input_state_create_info = PipelineVertexInputStateCreateInfo::builder()
+            .vertex_binding_descriptions(&[])
+            .vertex_attribute_descriptions(&[])
+            .build();
+
+        let pipeline_input_assembly_state_create_info =
+            PipelineInputAssemblyStateCreateInfo::builder()
+                .topology(PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false)
+                .build();
+
+        let viewport = Viewport::builder()
+            .x(0.)
+            .y(0.)
+            .width(swapchain_create_info.image_extent.width as f32)
+            .height(swapchain_create_info.image_extent.height as f32)
+            .min_depth(0.)
+            .max_depth(1.)
+            .build();
+
+        let scissor = Rect2D::builder()
+            .offset(Offset2D { x: 0, y: 0 })
+            .extent(swapchain_create_info.image_extent)
+            .build();
+
+        let pipeline_viewport_state_create_info = PipelineViewportStateCreateInfo::builder()
+            .viewports(&[viewport])
+            .scissors(&[scissor])
+            .build();
+
+        let pipeline_rasterization_state_create_info =
+            PipelineRasterizationStateCreateInfo::builder()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(PolygonMode::FILL)
+                .line_width(1.)
+                .cull_mode(CullModeFlags::BACK)
+                .front_face(FrontFace::CLOCKWISE)
+                .depth_bias_enable(false)
+                .build();
+
+        let pipeline_color_blend_attachment_state = PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(ColorComponentFlags::RGBA)
+            .blend_enable(true)
+            .src_color_blend_factor(BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(BlendOp::ADD)
+            .src_alpha_blend_factor(BlendFactor::ONE)
+            .dst_alpha_blend_factor(BlendFactor::ZERO)
+            .alpha_blend_op(BlendOp::ADD)
+            .build();
+
+        let pipeline_color_blend_state_create_info = PipelineColorBlendStateCreateInfo::builder()
+            .logic_op_enable(false)
+            .logic_op(LogicOp::COPY)
+            .attachments(&[pipeline_color_blend_attachment_state])
+            .blend_constants([0., 0., 0., 0.])
+            .build();
+
+        let pipeline_layout_create_info = PipelineLayoutCreateInfo::builder()
+            .set_layouts(&[])
+            .push_constant_ranges(&[])
+            .build();
+
+        let pipeline_layout =
+            unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }?;
+
         Ok(Self {
             instance,
             device,
@@ -313,6 +393,8 @@ impl Vulkan {
 
             vertex_shader,
             fragment_shader,
+
+            pipeline_layout,
         })
     }
 }
