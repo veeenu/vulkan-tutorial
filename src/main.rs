@@ -10,9 +10,9 @@ use ash::{
         make_api_version, ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle,
         CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, Image,
         ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
-        ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
-        PhysicalDeviceType, PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceCapabilitiesKHR,
-        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        ImageViewCreateInfoBuilder, ImageViewType, InstanceCreateInfo, PhysicalDevice,
+        PhysicalDeviceFeatures, PhysicalDeviceType, PresentModeKHR, Queue, QueueFlags, SharingMode,
+        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
     },
     Device, Entry, Instance,
 };
@@ -210,29 +210,38 @@ impl Vulkan {
         let swapchain_khr = unsafe { swapchain.create_swapchain(&swapchain_create_info, None)? };
         let swapchain_images = unsafe { swapchain.get_swapchain_images(swapchain_khr) }?;
 
-        let image_view_create_info = ImageViewCreateInfo::builder()
-            .view_type(ImageViewType::TYPE_2D)
-            .format(swapchain_create_info.image_format)
-            .components(
-                ComponentMapping::builder()
-                    .r(ComponentSwizzle::IDENTITY)
-                    .g(ComponentSwizzle::IDENTITY)
-                    .b(ComponentSwizzle::IDENTITY)
-                    .a(ComponentSwizzle::IDENTITY)
-                    .build(),
-            )
-            .subresource_range(
-                ImageSubresourceRange::builder()
-                    .aspect_mask(ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(1)
-                    .build(),
-            );
+        let image_view_create_info = |image| {
+            ImageViewCreateInfo::builder()
+                .view_type(ImageViewType::TYPE_2D)
+                .format(swapchain_create_info.image_format)
+                .components(
+                    ComponentMapping::builder()
+                        .r(ComponentSwizzle::IDENTITY)
+                        .g(ComponentSwizzle::IDENTITY)
+                        .b(ComponentSwizzle::IDENTITY)
+                        .a(ComponentSwizzle::IDENTITY)
+                        .build(),
+                )
+                .subresource_range(
+                    ImageSubresourceRange::builder()
+                        .aspect_mask(ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1)
+                        .build(),
+                )
+                .image(image)
+                .build()
+        };
 
-        let swapchain_image_views = (0..swapchain_images.len())
-            .map(|_| unsafe {
+        println!("Creating swap chain image views");
+
+        let swapchain_image_views = swapchain_images
+            .iter()
+            .copied()
+            .map(|image| unsafe {
+                let image_view_create_info = image_view_create_info(image);
                 device
                     .create_image_view(&image_view_create_info, None)
                     .map_err(anyhow::Error::from)
