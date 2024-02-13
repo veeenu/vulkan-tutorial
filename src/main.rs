@@ -10,11 +10,11 @@ use ash::{
         make_api_version, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
         AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags,
         ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-        DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace, Image,
-        ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice,
-        PhysicalDeviceFeatures, PhysicalDeviceType, PipelineBindPoint,
-        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace,
+        GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageSubresourceRange,
+        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo,
+        LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType,
+        PipelineBindPoint, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
         PipelineLayoutCreateInfo, PipelineRasterizationStateCreateInfo,
         PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
@@ -409,6 +409,17 @@ impl Vulkan {
             .build();
 
         let render_pass = unsafe { device.create_render_pass(&render_pass_create_info, None) }?;
+
+        println!("Create graphics pipeline");
+
+        let graphics_pipeline_create_info = GraphicsPipelineCreateInfo::builder()
+            .stages(&[
+                pipeline_shader_stage_create_info_vert,
+                pipeline_shader_stage_create_info_frag,
+            ])
+            .vertex_input_state(&pipeline_vertex_input_state_create_info)
+            .viewport_state(&pipeline_viewport_state_create_info)
+            .build();
 
         Ok(Self {
             instance,
