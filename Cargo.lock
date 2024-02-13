@@ -908,6 +908,7 @@ dependencies = [
  "anyhow",
  "ash",
  "ash-window",
+ "once_cell",
  "raw-window-handle",
  "winit",
 ]

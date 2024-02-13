@@ -9,5 +9,6 @@ edition = "2021"
 anyhow = "1.0.79"
 ash = { version = "0.37.3", features = ["linked"] }
 ash-window = "0.12.0"
+once_cell = "1.19.0"
 raw-window-handle = "0.5"
 winit = { version = "0.29.10", features = ["rwh_05", "x11", "wayland"], default-features = false }

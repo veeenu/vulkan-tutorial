@@ -1,4 +1,5 @@
-use std::ffi::{c_char, CStr};
+use core::slice;
+use std::{ffi::CStr, mem, path::Path};
 
 use anyhow::{anyhow, Result};
 use ash::{
@@ -10,12 +11,14 @@ use ash::{
         make_api_version, ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle,
         CompositeAlphaFlagsKHR, DeviceCreateInfo, DeviceQueueCreateInfo, Extent2D, Format, Image,
         ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
-        ImageViewCreateInfoBuilder, ImageViewType, InstanceCreateInfo, PhysicalDevice,
-        PhysicalDeviceFeatures, PhysicalDeviceType, PresentModeKHR, Queue, QueueFlags, SharingMode,
+        ImageViewType, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
+        PhysicalDeviceType, PipelineShaderStageCreateInfo, PresentModeKHR, Queue, QueueFlags,
+        ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode,
         SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
     },
     Device, Entry, Instance,
 };
+use once_cell::sync::Lazy;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::{
     dpi::LogicalSize,
@@ -24,8 +27,20 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+fn include_u32(bytes: &[u8]) -> Vec<u32> {
+    (0..bytes.len() / 4)
+        .map(|i| i * 4)
+        .map(|i| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]))
+        .collect()
+}
+
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
+
+static VERTEX_SHADER: Lazy<Vec<u32>> =
+    Lazy::new(|| include_u32(include_bytes!("shaders/shader.vert.spv")));
+static FRAGMENT_SHADER: Lazy<Vec<u32>> =
+    Lazy::new(|| include_u32(include_bytes!("shaders/shader.frag.spv")));
 
 fn main() -> Result<()> {
     let (window, event_loop) = init_window();
@@ -100,6 +115,9 @@ struct Vulkan {
 
     graphics_queue: Queue,
     present_queue: Queue,
+
+    vertex_shader: ShaderModule,
+    fragment_shader: ShaderModule,
 }
 
 impl Vulkan {
@@ -248,6 +266,36 @@ impl Vulkan {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        println!("Creating shader modules");
+
+        let shader_module_create_info_vert = ShaderModuleCreateInfo::builder()
+            .code(VERTEX_SHADER.as_ref())
+            .build();
+
+        let shader_module_create_info_frag = ShaderModuleCreateInfo::builder()
+            .code(FRAGMENT_SHADER.as_ref())
+            .build();
+
+        let vertex_shader =
+            unsafe { device.create_shader_module(&shader_module_create_info_vert, None) }?;
+
+        let fragment_shader =
+            unsafe { device.create_shader_module(&shader_module_create_info_frag, None) }?;
+
+        println!("Creating shader stages");
+
+        let pipeline_shader_stage_create_info_vert = PipelineShaderStageCreateInfo::builder()
+            .stage(ShaderStageFlags::VERTEX)
+            .module(vertex_shader)
+            .name(unsafe { CStr::from_bytes_with_nul_unchecked(b"main") })
+            .build();
+
+        let pipeline_shader_stage_create_info_frag = PipelineShaderStageCreateInfo::builder()
+            .stage(ShaderStageFlags::VERTEX)
+            .module(vertex_shader)
+            .name(unsafe { CStr::from_bytes_with_nul_unchecked(b"main") })
+            .build();
+
         Ok(Self {
             instance,
             device,
@@ -262,6 +310,9 @@ impl Vulkan {
 
             graphics_queue,
             present_queue,
+
+            vertex_shader,
+            fragment_shader,
         })
     }
 }
@@ -269,6 +320,9 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.device.destroy_shader_module(self.vertex_shader, None);
+            self.device
+                .destroy_shader_module(self.fragment_shader, None);
             self.swapchain_image_views
                 .drain(..)
                 .for_each(|swapchain_image_view| {
