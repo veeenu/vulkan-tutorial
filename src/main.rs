@@ -10,19 +10,20 @@ use ash::{
         make_api_version, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
         AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags,
         ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-        DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace,
-        GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageSubresourceRange,
-        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags,
-        InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures,
-        PhysicalDeviceType, PipelineBindPoint, PipelineColorBlendAttachmentState,
-        PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateInfo,
-        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
-        RenderPassCreateInfo, SampleCountFlags, ShaderModule, ShaderModuleCreateInfo,
-        ShaderStageFlags, SharingMode, SubpassDescription, SurfaceCapabilitiesKHR,
-        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
+        DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, Framebuffer,
+        FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags,
+        ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
+        ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice,
+        PhysicalDeviceFeatures, PhysicalDeviceType, Pipeline, PipelineBindPoint, PipelineCache,
+        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
+        PipelineLayoutCreateInfo, PipelineRasterizationStateCreateInfo,
+        PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
+        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
+        QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
+        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription,
+        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        Viewport,
     },
     Device, Entry, Instance,
 };
@@ -134,6 +135,9 @@ struct Vulkan {
 
     pipeline_layout: PipelineLayout,
     render_pass: RenderPass,
+    pipelines: Vec<Pipeline>,
+
+    framebuffers: Vec<Framebuffer>,
 }
 
 impl Vulkan {
@@ -437,14 +441,52 @@ impl Vulkan {
 
         println!("Create graphics pipeline");
 
-        let graphics_pipeline_create_info = GraphicsPipelineCreateInfo::builder()
+        let graphics_pipeline_create_infos = [GraphicsPipelineCreateInfo::builder()
             .stages(&[
                 pipeline_shader_stage_create_info_vert,
                 pipeline_shader_stage_create_info_frag,
             ])
             .vertex_input_state(&pipeline_vertex_input_state_create_info)
             .viewport_state(&pipeline_viewport_state_create_info)
-            .build();
+            .build()];
+
+        let pipelines = unsafe {
+            device
+                .create_graphics_pipelines(
+                    PipelineCache::null(),
+                    &graphics_pipeline_create_infos,
+                    None,
+                )
+                .map_err(|(pipelines, e)| {
+                    for pipeline in pipelines {
+                        device.destroy_pipeline(pipeline, None);
+                    }
+                    e
+                })
+        }?;
+
+        println!("Create framebuffers");
+
+        let framebuffers = swapchain_image_views
+            .iter()
+            .map(|&swapchain_image_view| {
+                let attachments = [swapchain_image_view];
+
+                let framebuffer_create_info = FramebufferCreateInfo::builder()
+                    .render_pass(render_pass)
+                    .attachments(&attachments)
+                    .width(swapchain_create_info.image_extent.width)
+                    .width(swapchain_create_info.image_extent.height)
+                    .layers(1)
+                    .build();
+
+                unsafe {
+                    device
+                        .create_framebuffer(&framebuffer_create_info, None)
+                        .map_err(|e| e.into())
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             instance,
@@ -466,6 +508,9 @@ impl Vulkan {
 
             pipeline_layout,
             render_pass,
+            pipelines,
+
+            framebuffers,
         })
     }
 }
@@ -473,6 +518,9 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            for framebuffer in self.framebuffers {
+                self.device.destroy_framebuffer(framebuffer, None);
+            }
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
