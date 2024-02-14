@@ -12,17 +12,17 @@ use ash::{
         ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
         DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace,
         GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageSubresourceRange,
-        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo,
-        LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType,
-        PipelineBindPoint, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-        PipelineLayoutCreateInfo, PipelineRasterizationStateCreateInfo,
-        PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
-        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
-        QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
-        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription,
-        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-        Viewport,
+        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags,
+        InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures,
+        PhysicalDeviceType, PipelineBindPoint, PipelineColorBlendAttachmentState,
+        PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateInfo,
+        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
+        RenderPassCreateInfo, SampleCountFlags, ShaderModule, ShaderModuleCreateInfo,
+        ShaderStageFlags, SharingMode, SubpassDescription, SurfaceCapabilitiesKHR,
+        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
     },
     Device, Entry, Instance,
 };
@@ -33,6 +33,11 @@ use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
+};
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use ash::vk::{
+    KhrGetPhysicalDeviceProperties2Fn, KhrPortabilityEnumerationFn, KhrPortabilitySubsetFn,
 };
 
 fn include_u32(bytes: &[u8]) -> Vec<u32> {
@@ -167,12 +172,23 @@ impl Vulkan {
                 .to_vec();
         extension_names.push(DebugUtils::name().as_ptr());
 
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            extension_names.push(KhrPortabilityEnumerationFn::name().as_ptr());
+            extension_names.push(KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
+        }
+
         println!("Creating instance");
 
         let instance_create_info = InstanceCreateInfo::builder()
             .application_info(&app_info)
             .enabled_layer_names(&layer_names)
             .enabled_extension_names(&extension_names)
+            .flags(if cfg!(any(target_os = "macos", target_os = "ios")) {
+                InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
+            } else {
+                InstanceCreateFlags::default()
+            })
             .build();
 
         let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
@@ -209,14 +225,23 @@ impl Vulkan {
             .queue_priorities(&[1.0f32])
             .build();
 
-        let device_queue_create_infos = [
-            device_queue_create_info_graphics,
-            device_queue_create_info_present,
-        ];
+        let device_queue_create_infos =
+            if queue_families.present_queue == queue_families.graphics_queue {
+                vec![device_queue_create_info_graphics]
+            } else {
+                vec![
+                    device_queue_create_info_graphics,
+                    device_queue_create_info_present,
+                ]
+            };
 
         let device_features = PhysicalDeviceFeatures::builder().build();
 
-        let device_extension_names = [Swapchain::name().as_ptr()];
+        let device_extension_names = [
+            Swapchain::name().as_ptr(),
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            KhrPortabilitySubsetFn::name().as_ptr(),
+        ];
 
         let device_create_info = DeviceCreateInfo::builder()
             .queue_create_infos(&device_queue_create_infos)
@@ -382,7 +407,7 @@ impl Vulkan {
 
         println!("Creating render pass");
 
-        let color_attachment_description = AttachmentDescription::builder()
+        let color_attachment_descriptions = [AttachmentDescription::builder()
             .format(swapchain_create_info.image_format)
             .samples(SampleCountFlags::TYPE_1)
             .load_op(AttachmentLoadOp::CLEAR)
@@ -391,21 +416,21 @@ impl Vulkan {
             .stencil_store_op(AttachmentStoreOp::DONT_CARE)
             .initial_layout(ImageLayout::UNDEFINED)
             .final_layout(ImageLayout::PRESENT_SRC_KHR)
-            .build();
+            .build()];
 
-        let color_attachment_reference = AttachmentReference::builder()
+        let color_attachment_references = [AttachmentReference::builder()
             .attachment(0)
             .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .build();
+            .build()];
 
-        let subpass_description = SubpassDescription::builder()
+        let subpass_descriptions = [SubpassDescription::builder()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
-            .color_attachments(&[color_attachment_reference])
-            .build();
+            .color_attachments(&color_attachment_references)
+            .build()];
 
         let render_pass_create_info = RenderPassCreateInfo::builder()
-            .attachments(&[color_attachment_description])
-            .subpasses(&[subpass_description])
+            .attachments(&color_attachment_descriptions)
+            .subpasses(&subpass_descriptions)
             .build();
 
         let render_pass = unsafe { device.create_render_pass(&render_pass_create_info, None) }?;
@@ -606,7 +631,7 @@ impl SwapchainSupport {
             .image_color_space(format.color_space)
             .image_array_layers(1)
             .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
-            .image_sharing_mode(if is_same_queue {
+            .image_sharing_mode(if !is_same_queue {
                 SharingMode::CONCURRENT
             } else {
                 SharingMode::EXCLUSIVE
@@ -627,9 +652,12 @@ fn is_device_suitable(
     surface_khr: SurfaceKHR,
 ) -> Option<(PhysicalDevice, QueueFamilies, SwapchainSupport)> {
     let properties = unsafe { instance.get_physical_device_properties(device) };
-    let features = unsafe { instance.get_physical_device_features(device) };
+    // let features = unsafe { instance.get_physical_device_features(device) };
 
-    if properties.device_type != PhysicalDeviceType::DISCRETE_GPU || features.geometry_shader == 0 {
+    if properties.device_type != PhysicalDeviceType::DISCRETE_GPU
+        && properties.device_type != PhysicalDeviceType::INTEGRATED_GPU
+    {
+        eprintln!("{device:?} unsuitable: type {:?}", properties.device_type);
         return None;
     }
 
