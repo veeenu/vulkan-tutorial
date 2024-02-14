@@ -7,26 +7,27 @@ use ash::{
         khr::{Surface, Swapchain},
     },
     vk::{
-        make_api_version, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
+        make_api_version, AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
         AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ClearColorValue, ClearValue,
         ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
         CommandBufferBeginInfo, CommandBufferLevel, CommandPool, CommandPoolCreateFlags,
         CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
-        CullModeFlags, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format,
-        Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
-        ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp,
-        Offset2D, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, Pipeline,
-        PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState,
-        PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateInfo,
-        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
-        RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
-        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassContents, SubpassDescription,
+        CullModeFlags, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Fence,
+        FenceCreateFlags, FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
+        GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageSubresourceRange,
+        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags,
+        InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures,
+        PhysicalDeviceType, Pipeline, PipelineBindPoint, PipelineCache,
+        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
+        PipelineLayoutCreateInfo, PipelineRasterizationStateCreateInfo,
+        PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
+        QueueFlags, Rect2D, RenderPass, RenderPassBeginInfo, RenderPassCreateInfo,
+        SampleCountFlags, Semaphore, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags,
+        SharingMode, SubmitInfo, SubpassContents, SubpassDependency, SubpassDescription,
         SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-        Viewport,
+        Viewport, SUBPASS_EXTERNAL,
     },
     Device, Entry, Instance,
 };
@@ -145,6 +146,10 @@ struct Vulkan {
 
     command_pool: CommandPool,
     command_buffers: Vec<CommandBuffer>,
+
+    semaphore_image_available: Semaphore,
+    semaphore_render_finished: Semaphore,
+    fence_in_flight: Fence,
 }
 
 impl Vulkan {
@@ -440,9 +445,19 @@ impl Vulkan {
             .color_attachments(&color_attachment_references)
             .build()];
 
+        let subpass_dependencies = [SubpassDependency::builder()
+            .src_subpass(SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(AccessFlags::default())
+            .dst_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(AccessFlags::default())
+            .build()];
+
         let render_pass_create_info = RenderPassCreateInfo::builder()
             .attachments(&color_attachment_descriptions)
             .subpasses(&subpass_descriptions)
+            .dependencies(&subpass_dependencies)
             .build();
 
         let render_pass = unsafe { device.create_render_pass(&render_pass_create_info, None) }?;
@@ -516,6 +531,17 @@ impl Vulkan {
         let command_buffers =
             unsafe { device.allocate_command_buffers(&command_buffer_allocate_info) }?;
 
+        let semaphore_image_available =
+            unsafe { device.create_semaphore(&Default::default(), None)? };
+
+        let semaphore_render_finished =
+            unsafe { device.create_semaphore(&Default::default(), None)? };
+
+        let fence_create_info = FenceCreateInfo::builder()
+            .flags(FenceCreateFlags::SIGNALED)
+            .build();
+        let fence_in_flight = unsafe { device.create_fence(&fence_create_info, None)? };
+
         Ok(Self {
             instance,
             device,
@@ -543,6 +569,9 @@ impl Vulkan {
 
             command_pool,
             command_buffers,
+            semaphore_image_available,
+            semaphore_render_finished,
+            fence_in_flight,
         })
     }
 
@@ -606,11 +635,47 @@ impl Vulkan {
 
         Ok(())
     }
+
+    fn draw(&self) -> Result<()> {
+        unsafe {
+            self.device
+                .wait_for_fences(&[self.fence_in_flight], true, u64::MAX)?;
+            self.device.reset_fences(&[self.fence_in_flight])?;
+            let (image_index, _swapchain_is_suboptimal) = self.swapchain.acquire_next_image(
+                self.swapchain_khr,
+                u64::MAX,
+                self.semaphore_image_available,
+                Fence::null(),
+            )?;
+            self.device
+                .reset_command_buffer(self.command_buffers[0], Default::default())?;
+            self.record_command_buffer(self.command_buffers[0], image_index)?;
+
+            let wait_semaphores = [self.semaphore_image_available];
+            let signal_semaphores = [self.semaphore_render_finished];
+            let pipeline_stage_flags = [PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+            let submit_info = [SubmitInfo::builder()
+                .wait_semaphores(&wait_semaphores)
+                .wait_dst_stage_mask(&pipeline_stage_flags)
+                .command_buffers(&self.command_buffers)
+                .signal_semaphores(&signal_semaphores)
+                .build()];
+            self.device
+                .queue_submit(self.graphics_queue, &submit_info, self.fence_in_flight)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.device
+                .destroy_semaphore(self.semaphore_image_available, None);
+            self.device
+                .destroy_semaphore(self.semaphore_render_finished, None);
+            self.device.destroy_fence(self.fence_in_flight, None);
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
             self.device.destroy_command_pool(self.command_pool, None);
