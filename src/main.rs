@@ -8,20 +8,23 @@ use ash::{
     },
     vk::{
         make_api_version, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
-        AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags,
-        ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-        DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, Framebuffer,
-        FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags,
-        ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo,
-        ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice,
-        PhysicalDeviceFeatures, PhysicalDeviceType, Pipeline, PipelineBindPoint, PipelineCache,
-        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-        PipelineLayoutCreateInfo, PipelineRasterizationStateCreateInfo,
-        PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
-        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
-        QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
-        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription,
+        AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ClearColorValue, ClearValue,
+        ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
+        CommandBufferBeginInfo, CommandBufferLevel, CommandPool, CommandPoolCreateFlags,
+        CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
+        CullModeFlags, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format,
+        Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
+        ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp,
+        Offset2D, PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceType, Pipeline,
+        PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState,
+        PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateInfo,
+        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
+        RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
+        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassContents, SubpassDescription,
         SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
         Viewport,
     },
@@ -123,6 +126,7 @@ struct Vulkan {
     swapchain_khr: SwapchainKHR,
     swapchain_images: Vec<Image>,
     swapchain_image_views: Vec<ImageView>,
+    swapchain_extent: Extent2D,
 
     surface: Surface,
     surface_khr: SurfaceKHR,
@@ -138,6 +142,9 @@ struct Vulkan {
     pipelines: Vec<Pipeline>,
 
     framebuffers: Vec<Framebuffer>,
+
+    command_pool: CommandPool,
+    command_buffers: Vec<CommandBuffer>,
 }
 
 impl Vulkan {
@@ -267,6 +274,7 @@ impl Vulkan {
         let swapchain = Swapchain::new(&instance, &device);
         let swapchain_khr = unsafe { swapchain.create_swapchain(&swapchain_create_info, None)? };
         let swapchain_images = unsafe { swapchain.get_swapchain_images(swapchain_khr) }?;
+        let swapchain_extent = swapchain_create_info.image_extent;
 
         let image_view_create_info = |image| {
             ImageViewCreateInfo::builder()
@@ -356,15 +364,15 @@ impl Vulkan {
         let viewport = Viewport::builder()
             .x(0.)
             .y(0.)
-            .width(swapchain_create_info.image_extent.width as f32)
-            .height(swapchain_create_info.image_extent.height as f32)
+            .width(swapchain_extent.width as f32)
+            .height(swapchain_extent.height as f32)
             .min_depth(0.)
             .max_depth(1.)
             .build();
 
         let scissor = Rect2D::builder()
             .offset(Offset2D { x: 0, y: 0 })
-            .extent(swapchain_create_info.image_extent)
+            .extent(swapchain_extent)
             .build();
 
         let pipeline_viewport_state_create_info = PipelineViewportStateCreateInfo::builder()
@@ -475,8 +483,8 @@ impl Vulkan {
                 let framebuffer_create_info = FramebufferCreateInfo::builder()
                     .render_pass(render_pass)
                     .attachments(&attachments)
-                    .width(swapchain_create_info.image_extent.width)
-                    .width(swapchain_create_info.image_extent.height)
+                    .width(swapchain_extent.width)
+                    .width(swapchain_extent.height)
                     .layers(1)
                     .build();
 
@@ -488,6 +496,26 @@ impl Vulkan {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        println!("Create command pool");
+
+        let command_pool_create_info = CommandPoolCreateInfo::builder()
+            .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(queue_families.graphics_queue)
+            .build();
+
+        let command_pool = unsafe { device.create_command_pool(&command_pool_create_info, None) }?;
+
+        println!("Create command buffer");
+
+        let command_buffer_allocate_info = CommandBufferAllocateInfo::builder()
+            .command_pool(command_pool)
+            .level(CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1)
+            .build();
+
+        let command_buffers =
+            unsafe { device.allocate_command_buffers(&command_buffer_allocate_info) }?;
+
         Ok(Self {
             instance,
             device,
@@ -496,6 +524,7 @@ impl Vulkan {
             swapchain_khr,
             swapchain_images,
             swapchain_image_views,
+            swapchain_extent,
 
             surface,
             surface_khr,
@@ -511,16 +540,83 @@ impl Vulkan {
             pipelines,
 
             framebuffers,
+
+            command_pool,
+            command_buffers,
         })
+    }
+
+    fn record_command_buffer(&self, command_buffer: CommandBuffer, index: u32) -> Result<()> {
+        let command_buffer_begin_info = CommandBufferBeginInfo::builder().build();
+
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &command_buffer_begin_info)?
+        };
+
+        let clear_values = [ClearValue {
+            color: ClearColorValue {
+                float32: [0., 0., 0., 0.],
+            },
+        }];
+
+        let render_pass_begin_info = RenderPassBeginInfo::builder()
+            .render_pass(self.render_pass)
+            .framebuffer(self.framebuffers[index as usize])
+            .render_area(
+                Rect2D::builder()
+                    .offset(Offset2D { x: 0, y: 0 })
+                    .extent(self.swapchain_extent)
+                    .build(),
+            )
+            .clear_values(&clear_values)
+            .build();
+
+        unsafe {
+            self.device.cmd_begin_render_pass(
+                command_buffer,
+                &render_pass_begin_info,
+                SubpassContents::INLINE,
+            );
+            self.device.cmd_bind_pipeline(
+                command_buffer,
+                PipelineBindPoint::GRAPHICS,
+                self.pipelines[0],
+            );
+
+            let viewports = [Viewport::builder()
+                .x(0.)
+                .y(0.)
+                .width(self.swapchain_extent.width as _)
+                .height(self.swapchain_extent.height as _)
+                .min_depth(0.)
+                .max_depth(1.)
+                .build()];
+            let scissors = [Rect2D::builder()
+                .offset(Default::default())
+                .extent(self.swapchain_extent)
+                .build()];
+
+            self.device.cmd_set_viewport(command_buffer, 0, &viewports);
+            self.device.cmd_set_scissor(command_buffer, 0, &scissors);
+            self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            self.device.cmd_end_render_pass(command_buffer);
+            self.device.end_command_buffer(command_buffer)?;
+        }
+
+        Ok(())
     }
 }
 
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
-            for framebuffer in self.framebuffers {
+            self.device
+                .free_command_buffers(self.command_pool, &self.command_buffers);
+            self.device.destroy_command_pool(self.command_pool, None);
+            self.framebuffers.drain(..).for_each(|framebuffer| {
                 self.device.destroy_framebuffer(framebuffer, None);
-            }
+            });
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
