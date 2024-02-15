@@ -24,10 +24,11 @@ use ash::{
         PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
         PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
         PresentInfoKHR, PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
-        RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, Semaphore, ShaderModule,
-        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents,
-        SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
-        SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL,
+        RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, Semaphore, SemaphoreWaitInfo,
+        ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo,
+        SubpassContents, SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR,
+        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
+        SUBPASS_EXTERNAL,
     },
     Device, Entry, Instance,
 };
@@ -67,7 +68,7 @@ static FRAGMENT_SHADER: Lazy<Vec<u32>> =
 fn main() -> Result<()> {
     let (window, event_loop) = init_window();
     let vulkan = Vulkan::new(&window)?;
-    main_loop(window, event_loop, vulkan);
+    main_loop(window, event_loop, vulkan)?;
 
     Ok(())
 }
@@ -86,43 +87,43 @@ fn init_window() -> (Window, EventLoop<()>) {
     (window, event_loop)
 }
 
-fn main_loop(window: Window, event_loop: EventLoop<()>, vulkan: Vulkan) {
+fn main_loop(window: Window, event_loop: EventLoop<()>, vulkan: Vulkan) -> Result<()> {
     vulkan.draw().unwrap();
-    event_loop
-        .run(move |event, elwt| {
-            match event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    println!("The close button was pressed; stopping");
-                    elwt.exit();
-                }
-                Event::AboutToWait => {
-                    // Application update code.
-
-                    // Queue a RedrawRequested event.
-                    //
-                    // You only need to call this if you've determined that you need to redraw in
-                    // applications which do not always need to. Applications that redraw continuously
-                    // can render here instead.
-                    window.request_redraw();
-                }
-                Event::WindowEvent {
-                    event: WindowEvent::RedrawRequested,
-                    ..
-                } => {
-                    vulkan.draw().unwrap();
-                    // Redraw the application.
-                    //
-                    // It's preferable for applications that do not render continuously to render in
-                    // this event rather than in AboutToWait, since rendering in here allows
-                    // the program to gracefully handle redraws requested by the OS.
-                }
-                _ => (),
+    event_loop.run(move |event, elwt| {
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                println!("The close button was pressed; stopping");
+                elwt.exit();
             }
-        })
-        .unwrap();
+            Event::AboutToWait => {
+                // Application update code.
+
+                // Queue a RedrawRequested event.
+                //
+                // You only need to call this if you've determined that you need to redraw in
+                // applications which do not always need to. Applications that redraw continuously
+                // can render here instead.
+                window.request_redraw();
+            }
+            Event::WindowEvent {
+                event: WindowEvent::RedrawRequested,
+                ..
+            } => {
+                vulkan.draw().unwrap();
+                // Redraw the application.
+                //
+                // It's preferable for applications that do not render continuously to render in
+                // this event rather than in AboutToWait, since rendering in here allows
+                // the program to gracefully handle redraws requested by the OS.
+            }
+            _ => (),
+        }
+    })?;
+
+    Ok(())
 }
 
 struct Vulkan {
@@ -256,6 +257,8 @@ impl Vulkan {
                     device_queue_create_info_present,
                 ]
             };
+
+        println!("{device_queue_create_infos:?}");
 
         let device_features = PhysicalDeviceFeatures::builder().build();
 
@@ -661,8 +664,8 @@ impl Vulkan {
 
     fn draw(&self) -> Result<()> {
         unsafe {
-            self.device
-                .wait_for_fences(&[self.fence_in_flight], true, u64::MAX)?
+            let fences = [self.fence_in_flight];
+            self.device.wait_for_fences(&fences, true, u64::MAX)?
         };
         unsafe { self.device.reset_fences(&[self.fence_in_flight])? };
         let (image_index, _swapchain_is_suboptimal) = unsafe {
@@ -714,6 +717,7 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.device.device_wait_idle().ok();
             self.device
                 .destroy_semaphore(self.semaphore_image_available, None);
             self.device
@@ -727,6 +731,9 @@ impl Drop for Vulkan {
             });
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.pipelines
+                .drain(..)
+                .for_each(|pipeline| self.device.destroy_pipeline(pipeline, None));
             self.device.destroy_render_pass(self.render_pass, None);
             self.device.destroy_shader_module(self.vertex_shader, None);
             self.device
@@ -775,6 +782,10 @@ impl QueueFamilies {
                     .unwrap_or(false)
             } {
                 present_queue = Some(queue_family_index)
+            }
+
+            if present_queue.is_some() && graphics_queue.is_some() {
+                break;
             }
         }
 
