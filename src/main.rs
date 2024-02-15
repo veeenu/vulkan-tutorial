@@ -20,14 +20,14 @@ use ash::{
         PhysicalDeviceType, Pipeline, PipelineBindPoint, PipelineCache,
         PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-        PipelineLayoutCreateInfo, PipelineRasterizationStateCreateInfo,
-        PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
-        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
-        QueueFlags, Rect2D, RenderPass, RenderPassBeginInfo, RenderPassCreateInfo,
-        SampleCountFlags, Semaphore, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags,
-        SharingMode, SubmitInfo, SubpassContents, SubpassDependency, SubpassDescription,
-        SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-        Viewport, SUBPASS_EXTERNAL,
+        PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+        PresentInfoKHR, PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
+        RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, Semaphore, ShaderModule,
+        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents,
+        SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
+        SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL,
     },
     Device, Entry, Instance,
 };
@@ -46,10 +46,14 @@ use ash::vk::{
 };
 
 fn include_u32(bytes: &[u8]) -> Vec<u32> {
-    (0..bytes.len() / 4)
+    let spv: Vec<u32> = (0..bytes.len() / 4)
         .map(|i| i * 4)
         .map(|i| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]))
-        .collect()
+        .collect();
+
+    assert_eq!(spv[0], 0x0723_0203);
+
+    spv
 }
 
 const WIDTH: u32 = 800;
@@ -62,8 +66,8 @@ static FRAGMENT_SHADER: Lazy<Vec<u32>> =
 
 fn main() -> Result<()> {
     let (window, event_loop) = init_window();
-    Vulkan::new(&window)?;
-    main_loop(window, event_loop);
+    let vulkan = Vulkan::new(&window)?;
+    main_loop(window, event_loop, vulkan);
 
     Ok(())
 }
@@ -82,7 +86,8 @@ fn init_window() -> (Window, EventLoop<()>) {
     (window, event_loop)
 }
 
-fn main_loop(window: Window, event_loop: EventLoop<()>) {
+fn main_loop(window: Window, event_loop: EventLoop<()>, vulkan: Vulkan) {
+    vulkan.draw().unwrap();
     event_loop
         .run(move |event, elwt| {
             match event {
@@ -107,6 +112,7 @@ fn main_loop(window: Window, event_loop: EventLoop<()>) {
                     event: WindowEvent::RedrawRequested,
                     ..
                 } => {
+                    vulkan.draw().unwrap();
                     // Redraw the application.
                     //
                     // It's preferable for applications that do not render continuously to render in
@@ -340,13 +346,13 @@ impl Vulkan {
         let pipeline_shader_stage_create_info_vert = PipelineShaderStageCreateInfo::builder()
             .stage(ShaderStageFlags::VERTEX)
             .module(vertex_shader)
-            .name(unsafe { CStr::from_bytes_with_nul_unchecked(b"main") })
+            .name(unsafe { CStr::from_bytes_with_nul_unchecked(b"main\0") })
             .build();
 
         let pipeline_shader_stage_create_info_frag = PipelineShaderStageCreateInfo::builder()
-            .stage(ShaderStageFlags::VERTEX)
-            .module(vertex_shader)
-            .name(unsafe { CStr::from_bytes_with_nul_unchecked(b"main") })
+            .stage(ShaderStageFlags::FRAGMENT)
+            .module(fragment_shader)
+            .name(unsafe { CStr::from_bytes_with_nul_unchecked(b"main\0") })
             .build();
 
         println!("Creating pipeline state");
@@ -396,8 +402,13 @@ impl Vulkan {
                 .depth_bias_enable(false)
                 .build();
 
-        let pipeline_color_blend_attachment_state = PipelineColorBlendAttachmentState::builder()
-            .color_write_mask(ColorComponentFlags::RGBA)
+        let pipeline_color_blend_attachment_state = [PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(
+                ColorComponentFlags::R
+                    | ColorComponentFlags::G
+                    | ColorComponentFlags::B
+                    | ColorComponentFlags::A,
+            )
             .blend_enable(true)
             .src_color_blend_factor(BlendFactor::SRC_ALPHA)
             .dst_color_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA)
@@ -405,12 +416,12 @@ impl Vulkan {
             .src_alpha_blend_factor(BlendFactor::ONE)
             .dst_alpha_blend_factor(BlendFactor::ZERO)
             .alpha_blend_op(BlendOp::ADD)
-            .build();
+            .build()];
 
         let pipeline_color_blend_state_create_info = PipelineColorBlendStateCreateInfo::builder()
             .logic_op_enable(false)
             .logic_op(LogicOp::COPY)
-            .attachments(&[pipeline_color_blend_attachment_state])
+            .attachments(&pipeline_color_blend_attachment_state)
             .blend_constants([0., 0., 0., 0.])
             .build();
 
@@ -464,13 +475,25 @@ impl Vulkan {
 
         println!("Create graphics pipeline");
 
+        let stages = [
+            pipeline_shader_stage_create_info_vert,
+            pipeline_shader_stage_create_info_frag,
+        ];
+        let pipeline_multisample_state_create_info = PipelineMultisampleStateCreateInfo::builder()
+            .rasterization_samples(SampleCountFlags::TYPE_1)
+            .build();
+
         let graphics_pipeline_create_infos = [GraphicsPipelineCreateInfo::builder()
-            .stages(&[
-                pipeline_shader_stage_create_info_vert,
-                pipeline_shader_stage_create_info_frag,
-            ])
+            .stages(&stages)
+            .dynamic_state(&pipeline_dynamic_state_create_info)
             .vertex_input_state(&pipeline_vertex_input_state_create_info)
             .viewport_state(&pipeline_viewport_state_create_info)
+            .render_pass(render_pass)
+            .layout(pipeline_layout)
+            .input_assembly_state(&pipeline_input_assembly_state_create_info)
+            .multisample_state(&pipeline_multisample_state_create_info)
+            .color_blend_state(&pipeline_color_blend_state_create_info)
+            .rasterization_state(&pipeline_rasterization_state_create_info)
             .build()];
 
         let pipelines = unsafe {
@@ -499,7 +522,7 @@ impl Vulkan {
                     .render_pass(render_pass)
                     .attachments(&attachments)
                     .width(swapchain_extent.width)
-                    .width(swapchain_extent.height)
+                    .height(swapchain_extent.height)
                     .layers(1)
                     .build();
 
@@ -639,30 +662,50 @@ impl Vulkan {
     fn draw(&self) -> Result<()> {
         unsafe {
             self.device
-                .wait_for_fences(&[self.fence_in_flight], true, u64::MAX)?;
-            self.device.reset_fences(&[self.fence_in_flight])?;
-            let (image_index, _swapchain_is_suboptimal) = self.swapchain.acquire_next_image(
+                .wait_for_fences(&[self.fence_in_flight], true, u64::MAX)?
+        };
+        unsafe { self.device.reset_fences(&[self.fence_in_flight])? };
+        let (image_index, _swapchain_is_suboptimal) = unsafe {
+            self.swapchain.acquire_next_image(
                 self.swapchain_khr,
                 u64::MAX,
                 self.semaphore_image_available,
                 Fence::null(),
-            )?;
+            )?
+        };
+        unsafe {
             self.device
-                .reset_command_buffer(self.command_buffers[0], Default::default())?;
-            self.record_command_buffer(self.command_buffers[0], image_index)?;
+                .reset_command_buffer(self.command_buffers[0], Default::default())?
+        };
+        // XXX: Why is this not unsafe?
+        self.record_command_buffer(self.command_buffers[0], image_index)?;
 
-            let wait_semaphores = [self.semaphore_image_available];
-            let signal_semaphores = [self.semaphore_render_finished];
-            let pipeline_stage_flags = [PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-            let submit_info = [SubmitInfo::builder()
-                .wait_semaphores(&wait_semaphores)
-                .wait_dst_stage_mask(&pipeline_stage_flags)
-                .command_buffers(&self.command_buffers)
-                .signal_semaphores(&signal_semaphores)
-                .build()];
+        let wait_semaphores = [self.semaphore_image_available];
+        let signal_semaphores = [self.semaphore_render_finished];
+        let pipeline_stage_flags = [PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let submit_info = [SubmitInfo::builder()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&pipeline_stage_flags)
+            .command_buffers(&self.command_buffers)
+            .signal_semaphores(&signal_semaphores)
+            .build()];
+        unsafe {
             self.device
-                .queue_submit(self.graphics_queue, &submit_info, self.fence_in_flight)?;
-        }
+                .queue_submit(self.graphics_queue, &submit_info, self.fence_in_flight)?
+        };
+
+        let swapchains = [self.swapchain_khr];
+        let image_indices = [image_index];
+
+        let present_info = PresentInfoKHR::builder()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices)
+            .build();
+        unsafe {
+            self.swapchain
+                .queue_present(self.present_queue, &present_info)?
+        };
 
         Ok(())
     }
